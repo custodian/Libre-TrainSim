@@ -42,10 +42,8 @@ func initalize() -> void:
 
 	$MeshInstance.show()
 
-	var personsNode := Spatial.new()
-	personsNode.name = "Persons"
+	var personsNode := PersonsNode.new(self)
 	add_child(personsNode)
-	personsNode.owner = self
 
 	initialize_outside_announcement_player()
 

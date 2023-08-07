@@ -1,7 +1,7 @@
 class_name Station
 extends RailLogic
 
-var personsNode: Spatial
+var personsNode: PersonsNode
 
 export (int) var length: int # Length of platform
 

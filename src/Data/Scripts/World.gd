@@ -68,10 +68,8 @@ func _ready() -> void:
 	set_scenario_to_world()
 
 	## Create Persons-Node:
-	var personsNode := WorldObject.new()
-	personsNode.name = "Persons"
+	var personsNode := PersonsNode.new(self)
 	add_child(personsNode)
-	personsNode.owner = self
 
 	for signalN in $Signals.get_children():
 		if signalN.type == "Station":
