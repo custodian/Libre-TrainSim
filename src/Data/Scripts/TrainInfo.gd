@@ -22,10 +22,10 @@ func update_info(player: LTSPlayer) -> void:
 
 	## Doors:
 	$ScrollContainer/VBoxContainer/Doors.visible = player.doors
-	if not (player.doorLeft or player.doorRight):
+	if player.is_all_doors_closed():
 		$ScrollContainer/VBoxContainer/Doors/dot.texture = green
 	else:
-		if player.doorsClosing:
+		if player.is_doors_closing():
 			$ScrollContainer/VBoxContainer/Doors/dot.texture = orange
 		else:
 			$ScrollContainer/VBoxContainer/Doors/dot.texture = red
