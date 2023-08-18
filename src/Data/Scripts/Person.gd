@@ -140,6 +140,10 @@ func _handle_walk(delta: float) -> void:
 	# _action = Action.IDLE or return to keep the animations playing
 	# adjust walking speed accordingly
 
+	if _is_too_crowdy():
+		# BASIL: Check if they are moving to the same point. Closet one wins
+		return
+
 	_update_action_animation()
 	
 	# No need to move
@@ -168,6 +172,38 @@ func _handle_walk(delta: float) -> void:
 		rotation.y = rotation.y - _attached_station.rotation.y
 
 	_debug_draw_path()	
+
+#using transform and vector3d calculate angle between two spatial objects
+func _get_angle_between_transforms(transform1: Transform, transform2: Transform) -> float:
+	var vector_delta := transform2.origin - transform1.origin
+	if vector_delta.z == 0:
+		return PI / 2
+	elif vector_delta.z > 0:
+		return atan(vector_delta.x / vector_delta.z)
+	else:
+		return atan(vector_delta.x / vector_delta.z) + PI
+
+
+# Detect if there are other Persons in the radius R around, and they are moving in front cone of view
+func _is_too_crowdy() -> bool:
+	var radius := 1.5
+	var angle := 0.25 * PI
+	var collisions:Array = $Body.get_overlapping_areas()
+	for obj in collisions:
+		if not obj is Area:
+			continue
+		var parent = obj.get_parent()
+		var person = parent as Person
+		if person == null:
+			continue
+
+		var angle_to_person = _get_angle_between_transforms(transform, person.transform)
+		angle_to_person = abs(angle_to_person + rotation.y - 2 * PI)
+		if angle_to_person > angle:
+			continue
+		if person.action == Action.WALK:
+			return true
+	return false
 
 
 func _update_action_animation() -> void:
