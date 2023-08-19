@@ -63,7 +63,7 @@ func _is_destination_reached() -> bool:
 func _handle_walk(delta: float) -> void:
 	
 	_debug_draw_state()
-		
+
 	# Handle next _destination point if required. if we change _destination type, exit.
 	match _destination:
 		Destination.NONE:
@@ -140,9 +140,15 @@ func _handle_walk(delta: float) -> void:
 	# _action = Action.IDLE or return to keep the animations playing
 	# adjust walking speed accordingly
 
-	if _is_too_crowdy():
-		# BASIL: Check if they are moving to the same point. Closet one wins
-		return
+	# Check if nearby persons are moving in the same direction (same destinationPos point)
+	# who is closer to the point - wins
+	if _is_blocked_by_other_person():
+		_action = Action.IDLE
+		#return
+
+	#if _is_too_crowdy():
+	#	# BASIL: Check if they are moving to the same point. Closet one wins
+	#	return
 
 	_update_action_animation()
 	
@@ -173,21 +179,24 @@ func _handle_walk(delta: float) -> void:
 
 	_debug_draw_path()	
 
-#using transform and vector3d calculate angle between two spatial objects
-func _get_angle_between_transforms(transform1: Transform, transform2: Transform) -> float:
-	var vector_delta := transform2.origin - transform1.origin
-	if vector_delta.z == 0:
-		return PI / 2
-	elif vector_delta.z > 0:
-		return atan(vector_delta.x / vector_delta.z)
-	else:
-		return atan(vector_delta.x / vector_delta.z) + PI
+
+func _get_next_route_point() -> Vector3:
+	if _destination_path.empty():
+		if _is_destination_train_bound():
+			return translation
+		else:
+			return global_transform.origin
+	return _destination_path[0]
+	
+	
+func _get_distance_to_destination() -> float:
+	var route_point := _get_next_route_point()
+	if _is_destination_train_bound():
+		return global_transform.origin.distance_to(route_point)
+	return translation.distance_to(route_point)
 
 
-# Detect if there are other Persons in the radius R around, and they are moving in front cone of view
-func _is_too_crowdy() -> bool:
-	var radius := 1.5
-	var angle := 0.25 * PI
+func _is_blocked_by_other_person() -> bool:
 	var collisions:Array = $Body.get_overlapping_areas()
 	for obj in collisions:
 		if not obj is Area:
@@ -196,14 +205,57 @@ func _is_too_crowdy() -> bool:
 		var person = parent as Person
 		if person == null:
 			continue
-
-		var angle_to_person = _get_angle_between_transforms(transform, person.transform)
-		angle_to_person = abs(angle_to_person + rotation.y - 2 * PI)
-		if angle_to_person > angle:
+		#if person._action != Action.WALK:
+		#	continue
+		if get_instance_id() == 10065:
+			pass
+		if person._get_next_route_point().distance_to(_get_next_route_point()) > _destination_tolerance:
 			continue
-		if person.action == Action.WALK:
+		var d1: float = _get_distance_to_destination()
+		var d2: float = person._get_distance_to_destination()
+		if d2 < d1 or person._destination_path.empty():
+			# BASIL: set speed to lowest from my max and person current
+			# Store person as known blocker
+			_walking_speed = min(_walking_speed, person._walking_speed)
 			return true
+	# BASIL: i'm not block now, restore max speed
+	# Check if known blockers are far away or not moving anymore
+	#_walking_speed = _walking_speed_max
 	return false
+
+# #using transform and vector3d calculate angle between two spatial objects
+# func _get_angle_between_transforms(transform1: Transform, transform2: Transform) -> float:
+# 	var vector_delta := transform2.origin - transform1.origin
+# 	if vector_delta.z == 0:
+# 		return PI / 2
+# 	elif vector_delta.z > 0:
+# 		return atan(vector_delta.x / vector_delta.z)
+# 	else:
+# 		return atan(vector_delta.x / vector_delta.z) + PI
+
+
+# # Detect if there are other Persons in the radius R around, and they are moving in front cone of view
+# func _is_too_crowdy() -> bool:
+# 	var radius := 1.5
+# 	var angle := 0.25 * PI
+# 	var collisions:Array = $Body.get_overlapping_areas()
+# 	for obj in collisions:
+# 		if not obj is Area:
+# 			continue
+# 		var parent = obj.get_parent()
+# 		var person = parent as Person
+# 		if person == null:
+# 			continue
+
+# 		var angle_to_person = _get_angle_between_transforms(transform, person.transform)
+# 		angle_to_person = abs(angle_to_person + rotation.y - 2 * PI)
+# 		if angle_to_person > angle:
+# 			continue
+
+		
+# 		if person.action == Action.WALK:
+# 			return true
+# 	return false
 
 
 func _update_action_animation() -> void:
