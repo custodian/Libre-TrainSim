@@ -18,8 +18,8 @@ var door_right := DoorState.new()
 var leftDoors := []
 var rightDoors := []
 
-var seats := [] # In here the Seats Refernces are safed
-var seatsOccupancy := [] # In here the Persons are safed, they are currently sitting on the seats. Index equal to index of seats
+var seats_free := []
+var attachedPersons := {} # Person -> occupied seat reference
 
 var passengerPathNodes := []
 
@@ -29,8 +29,6 @@ export var pantographEnabled: bool = false
 
 onready var player: LTSPlayer
 var world: Node
-
-var attachedPersons := []
 
 
 func initalize() -> void:
@@ -83,6 +81,8 @@ func _on_world_origin_shifted(new_origin: Vector3) -> void:
 
 var initialSwitchCheck: bool = false
 func _process(delta: float) -> void:
+	_debug_passanger_state()
+
 	if get_tree().paused:
 		if player != null and not cabinMode:
 			visible = player.wagonsVisible
@@ -286,36 +286,37 @@ func is_any_doors_opened() -> bool:
 	return door_left.is_opened() or door_right.is_opened()
 
 
-func registerPerson(person: Spatial, door: Spatial):
-	var seatIndex: int = getRandomFreeSeatIndex()
-	if seatIndex == -1:
-		person.queue_free()
-		# We should add overcrowding :)
-		return
-	attachedPersons.append(person)
+# returns seat, and routePath to reach seat from the Door
+func register_person(person: Spatial, door: Spatial) -> Array:
+	var seat: Spatial = get_random_free_seat_index()
+	if seat == null:
+		# Person will ask for another wagon
+		return []
+
+	attachedPersons[person] = seat
 	person.get_parent().remove_child(person)
 	$Persons.add_child(person)
 	person.owner = self
 	person.translation = door.translation
 
-	var passengerRoutePath: Array = get_path_from_to(door, seats[seatIndex])
+	var passengerRoutePath: Array = get_path_from_to(door, seat)
 	if passengerRoutePath == []:
 		Logger.err("Some seats of "+ name + " are not reachable from every door!!", self)
-		return
-	person.destinationPos = passengerRoutePath
-	person.destinationIsSeat = true
-	person.attachedSeat = seats[seatIndex]
-	seatsOccupancy[seatIndex] = person
+		return []
+	seats_free.erase(seat)
+
+	# Wagon is full, notify train to update routing
+	if seats_free.empty():
+		player.update_vacant_wagons_doors()
+	
+	return [seat, passengerRoutePath]
 
 
-func getRandomFreeSeatIndex() -> int:
-	if attachedPersons.size()+1 > seats.size():
-		return -1
-	while (true):
-		var randIndex: int = int(rand_range(0, seats.size()))
-		if seatsOccupancy[randIndex] == null:
-			return randIndex
-	return -1
+func get_random_free_seat_index() -> Spatial:
+	if seats_free.empty():
+		return null
+	var randIndex = int(rand_range(0, seats_free.size()))
+	return seats_free[randIndex]
 
 
 func get_path_from_to(from: Spatial, to: Spatial) -> Array:
@@ -352,63 +353,75 @@ func registerPassengerPathNodes() -> void:
 func registerSeats() -> void:
 	for child in $Seats.get_children():
 		if child.is_in_group("PassengerSeat"):
-			seats.append(child)
-			seatsOccupancy.append(null)
+			seats_free.append(child)
 
 
-var leavingPassengerNodes := []
-## Called by the train when arriving
-## Randomly picks some to the waggon attached persons, picks randomly a door
-## on the given side, sends the routeInformation for that to the persons.
-func sendPersonsToDoor(doorDirection: int, proportion: float = 0.5) -> void:
-	leavingPassengerNodes.clear()
-	var possibleDoors := []
-	if doorDirection == PlatformSide.LEFT or doorDirection == PlatformSide.BOTH:
-		possibleDoors.append_array(leftDoors)
-	if doorDirection == PlatformSide.RIGHT or doorDirection == PlatformSide.BOTH:
-		possibleDoors.append_array(rightDoors)
+## Called by the train when arriving to the station
+## Randomly picks some attached persons
+##
+## TODO: At some point we will have to notify persons that train arrived
+## and they will decide if they want to leave or not
+## i.e. Person will have destination station set when spawned 
+## (so Person can switch trains between NPC and Player)
+func send_persons_to_station(proportion: float = 0.5) -> void:
+	var persons: Array = _get_persons_to_unboard(proportion)
+	for person in persons:
+		person.arriving_to_station()
 
-	if possibleDoors.empty():
-		Logger.err(name + ": No Doors found for doorDirection: " + String(doorDirection), self)
-		return
 
+func _get_persons_to_unboard(proportion: float = 0.5) -> Array:
+	# everyone will leave at the end of the line
+	if player.current_station_table_entry.stop_type == StopType.END:
+		return attachedPersons.keys()
+
+	var persons := []
 	randomize()
-	for personNode in $Persons.get_children():
+	for personNode in attachedPersons.keys():
 		if rand_range(0, 1) < proportion:
-			leavingPassengerNodes.append(personNode)
-			var randomDoor: Spatial = possibleDoors[int(rand_range(0, possibleDoors.size()))]
+			persons.append(personNode)
+	return persons
+	
 
-			var seatIndex: int = -1
-			for i in range(seatsOccupancy.size()):
-				if seatsOccupancy[i] == personNode:
-					seatIndex = i
-					break
-			if seatIndex == -1:
-				Logger.err(name + ": Error: Seat from person" + personNode.name+  " not found!", self)
-				return
+func get_route_from_seat_to_door(seat: Spatial) -> Array:
+	var possible_doors := []
+	match player.current_station_node.platform_side:
+		PlatformSide.LEFT:
+			possible_doors.append_array(leftDoors)
+		PlatformSide.RIGHT:
+			possible_doors.append_array(rightDoors)
+		PlatformSide.BOTH:
+			possible_doors.append_array(leftDoors)
+			possible_doors.append_array(rightDoors)
 
-			var passengerRoutePath: Array = get_path_from_to(seats[seatIndex], randomDoor)
-			if passengerRoutePath == []:
-				Logger.err("Some doors are not reachable from every door! Check your Path configuration", self)
-				return
+	var closest_index := player.get_closest_door_to_position(seat.global_transform.origin, possible_doors)
+	var closest_door: Spatial = possible_doors[closest_index]
+	var route: Array = get_path_from_to(seat, closest_door)
+	if route.empty():
+		Logger.err("Some doors are not reachable from every door! Check your Path configuration", self)
+		assert(false)
+		return []
 
-			# Update position of door. (The Persons should stick inside the train while waiting ;)
-			if passengerRoutePath.back().z < 0:
-				passengerRoutePath[passengerRoutePath.size()-1].z += 1.3
-			else:
-				passengerRoutePath[passengerRoutePath.size()-1].z -= 1.3
-
-			personNode.destinationPos = passengerRoutePath # Here maybe .append could be better
-			personNode.attachedStation = player.current_station_node
-			personNode.transitionToStation = true
-			personNode.assignedDoor = randomDoor
-			personNode.attachedSeat = null
-			seatsOccupancy[seatIndex] = null
+	# Update position of door. (The Persons should stick inside the train while waiting ;)
+	if closest_door.side == DoorSide.LEFT:
+		route[route.size()-1].z += 1.3
+	else:
+		route[route.size()-1].z -= 1.3
+	
+	return [closest_door, route]
 
 
-func deregisterPerson(personNode: Node) -> void:
-	if leavingPassengerNodes.has(personNode):
-		leavingPassengerNodes.erase(personNode)
+func is_person_registered(person: Spatial) -> bool:
+	return attachedPersons.has(person)
+
+
+func deregister_person(person_node: Spatial) -> void:
+	assert(attachedPersons.has(person_node), "Trying to deregister unknown Person")
+	seats_free.append(attachedPersons[person_node])
+	attachedPersons.erase(person_node)
+	
+	# Wagon have free seats now, update train doors routes to allow boarding
+	if seats_free.size() == 1:
+		player.update_vacant_wagons_doors()
 
 
 var outside_announcement_player: AudioStreamPlayer3D
@@ -456,3 +469,24 @@ func updateSwitchOnNextChange(): ## Exact function also in player.gd. But these 
 			return
 
 	switch_on_next_change = false
+
+
+func vacant_seats_count() -> int:
+	return seats_free.size()
+
+
+var _debug_passenger_state_label: Label = null
+func _debug_passanger_state() -> void:
+	if !ProjectSettings["game/debug/draw_labels/wagon"]:
+		if _debug_passenger_state_label:
+			_debug_passenger_state_label.queue_free()
+			_debug_passenger_state_label = null
+		return
+	var total_seats := seats_free.size() + attachedPersons.size()
+	if total_seats == 0:
+		return
+	if not _debug_passenger_state_label:
+		_debug_passenger_state_label = DebugLabel.new(self, 50, Vector3(0, 5, 0))
+
+	if _debug_passenger_state_label.is_visible():
+		_debug_passenger_state_label.set_text( "W:%d\nPassenger: %d / %d" % [get_instance_id(), attachedPersons.size(), total_seats])

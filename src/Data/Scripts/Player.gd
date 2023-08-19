@@ -48,6 +48,7 @@ var is_in_station := false # true if the train speed = 0, the train is fully in 
 var real_arrival_time: int # Time is set if train successfully arrived
 var route_distance_at_station_begin: float = 0 # distance of the station begin on route
 const GOODWILL_DISTANCE: float = 10.0 # distance the player can overdrive a station, or it's train end isn't in the station.
+var leave_current_station_announced: bool = false # to prevent depature re-announcement till train is refactored with a state
 
 ## Doors: 
 # We assume that all doors behave the same way
@@ -56,6 +57,10 @@ const GOODWILL_DISTANCE: float = 10.0 # distance the player can overdrive a stat
 export var doors := true # Defines, if this train has doors.
 var door_left: DoorState = null
 var door_right: DoorState = null
+# Doors cache to be used within current station
+var _station_doors: Array = []
+var _station_doors_wagons: Array = []
+
 
 export var brakingSpeed: float = 0.3
 export var brakeReleaseSpeed: float = 0.2
@@ -814,10 +819,8 @@ func handle_signal(signal_name: String) -> void:
 		current_station_node = signal_passed
 		is_in_station = false
 		route_distance_at_station_begin = baked_route_signal_positions[current_station_node.name]
-
-		if current_station_table_entry.stop_type != StopType.BEGINNING:
-			for wagonI in wagonsI:
-				wagonI.sendPersonsToDoor(current_station_node.platform_side, current_station_table_entry.leaving_persons/100.0)
+		# We are arriving to the station, people can start preparing to get off the train
+		send_persons_to_station()
 
 	elif signal_passed.type == RailLogicTypes.SPEED_LIMIT:
 		if reverser == ReverserState.REVERSE:
@@ -918,9 +921,8 @@ func check_station(delta: float) -> void:
 			elif not ai:
 				jTools.call_delayed(1, jAudioManager, "play_game_sound", [current_station_table_entry.arrival_sound_path])
 
-		# send door position, so persons can get in
-		if current_station_table_entry.stop_type != StopType.END:
-			sendDoorPositionsToCurrentStation()
+		# notify station train arrived
+		arrived_to_current_station()
 
 	# train waited long enough in station
 	elif is_in_station and world.time >= current_station_table_entry.departure_time and \
@@ -933,18 +935,22 @@ func check_station(delta: float) -> void:
 			return
 		# else, send "you can depart" message once the time is up
 		else:
-			send_message("YOU_CAN_DEPART")
-			if current_station_table_entry.departure_sound_path != "":
+			if current_station_table_entry.departure_sound_path != "" and not leave_current_station_announced:
+				send_message("YOU_CAN_DEPART")
+				leave_current_station_announced = true
 				if camera_state != CameraState.CABIN_VIEW:
 					for wagon in wagonsI:
 						wagon.play_outside_announcement(current_station_table_entry.departure_sound_path)
 				elif not ai:
 					jAudioManager.play_game_sound(current_station_table_entry.departure_sound_path)
-			leave_current_station()
-
+			# Allow autopilot to exit staton
+			if ai or automaticDriving:
+				leave_current_station()
 
 
 func leave_current_station() -> void:
+	current_station_node.train_departured(self)
+	leave_current_station_announced = false
 	is_in_station = false
 	current_station_table_index += 1
 	if current_station_table_index < station_table.size():
@@ -1107,10 +1113,28 @@ func check_doors() -> void:
 		toggle_door_side(door_right, "open_right_doors", "close_right_doors")
 
 
+func get_route_to_free_wagon(person_position: Vector3) -> Array:
+	if _station_doors.empty():
+		return []
+	var index := get_closest_door_to_position(person_position, _station_doors)
+	return [_station_doors_wagons[index], _station_doors[index]]
+
+
+func get_closest_door_to_position(position: Vector3, doors_array: Array) -> int:
+	var nearestDoorIndex := 0	
+	for index in range(doors_array.size()):
+		if doors_array[index].global_transform.origin.distance_to(position) \
+				< doors_array[nearestDoorIndex].global_transform.origin \
+				.distance_to(position):
+			nearestDoorIndex = index
+	return nearestDoorIndex
+
+
 func auto_open_doors_at_station() -> void:
 	if not current_station_table_entry:
 		return
-	var station_node = world.get_signal(current_station_table_entry.station_node_name)
+	var station_node: Node = world.get_signal(current_station_table_entry.station_node_name)
+	assert(station_node != null)
 	match station_node.platform_side:
 		PlatformSide.NONE:
 			pass
@@ -1385,6 +1409,10 @@ func handle_station_signal():
 		_signal_was_freed_for_station_index += 1
 
 
+func send_persons_to_station() -> void:
+	for wagonI in wagonsI:
+		wagonI.send_persons_to_station(current_station_table_entry.leaving_persons/100.0)
+
 
 func get_next_station_name_on_track() -> String:
 	var all: Array = get_all_upcoming_signals_of_types(["Station"])
@@ -1550,22 +1578,28 @@ func updateTrainAudioBus() -> void:
 		AudioServer.set_bus_volume_db(2,soundIsolation)
 
 
-func sendDoorPositionsToCurrentStation() -> void:
-	Logger.log("Sending Door Postions...")
-	var doorsArray := []
-	var doorsWagon := []
+func arrived_to_current_station() -> void:
+	update_vacant_wagons_doors()
+	if current_station_table_entry.stop_type != StopType.END:
+		current_station_node.train_arrived(self)
+
+
+func update_vacant_wagons_doors() -> void:
+	_station_doors.clear()
+	_station_doors_wagons.clear()
 	for wagon in wagonsI:
+		if wagon.vacant_seats_count() == 0:
+			continue
 		if (current_station_node.platform_side == PlatformSide.LEFT):
 			for door in wagon.leftDoors:
-				doorsArray.append(door)
-				doorsWagon.append(wagon)
+				_station_doors.append(door)
+				_station_doors_wagons.append(wagon)
 		if (current_station_node.platform_side == PlatformSide.RIGHT):
 			for door in wagon.rightDoors:
-				doorsArray.append(door)
-				doorsWagon.append(wagon)
-	current_station_node.setDoorPositions(doorsArray, doorsWagon)
+				_station_doors.append(door)
+				_station_doors_wagons.append(wagon)
 
-
+	
 var curve_shaking_factor: float = 0.0
 var camera_shaking_time: float = 0.0
 func get_camera_shaking(delta: float) -> Vector3:
@@ -1681,6 +1715,7 @@ func jump_to_rail(rail: Spatial, distance: float, fwd: bool = true) -> void:
 		wagon.drive(0)
 
 
+# TODO: Verify jump to station works with custom scenarios
 func jump_to_station(station_table_index : int) -> void:
 	set_speed_to_zero()
 
@@ -1689,7 +1724,7 @@ func jump_to_station(station_table_index : int) -> void:
 	var local_distance_on_rail: float = station_node.get_perfect_halt_distance_on_rail(length)
 	jump_to_rail(station_node.rail, local_distance_on_rail, local_forward)
 	force_to_be_in_station(station_table_index)
-	sendDoorPositionsToCurrentStation()
+	arrived_to_current_station()
 
 
 func force_to_be_in_station(station_table_index: int) -> void:
@@ -1703,7 +1738,7 @@ func force_to_be_in_station(station_table_index: int) -> void:
 	_door_open_message_timer = 0
 	_door_open_message_sent = false
 	whole_train_in_station = true
-	auto_open_doors_at_station()	
+	auto_open_doors_at_station()
 
 
 # Returns -1, if station node not found in station_table
